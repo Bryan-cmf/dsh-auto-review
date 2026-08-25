@@ -1,0 +1,9 @@
+# dsh-auto-review — bundle patch layer.
+# 「審查」分頁 + /review 命令 + /__review API：GLM 5.3 四維審查閉環。
+# webServer/timer 為硬依賴（路由 + 輪詢）；其餘服務運行時可選獲取。
+- insert:
+    - id: auto-review
+      name: 'dsh-auto-review'
+      inject:
+        - webServer
+        - timer
