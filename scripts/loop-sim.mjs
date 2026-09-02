@@ -333,7 +333,8 @@ console.log('\n── 場景④ A3 指紋：跨模型措辭漂移（同 file+行
 	st = await sc.state('s4')
 	check('④ R3 措辭漂移仍計連續 → oscillated 終態', st?.running === false && st?.lastStatus === 'oscillated', st?.lastStatus)
 	check('④ oscillated 附帶轉人工說明', /連續 3 輪/.test(st?.last?.error ?? ''), st?.last?.error)
-	check('④ 共注入 2 次（R1、R2），R3 直接終態不再注入', sc.followups.length === 2, String(sc.followups.length))
+	// R8（F-2）：R3 不再注入建議，改發終態通告（第 3 條 followup）
+	check('④ 共注入 2 次（R1、R2），R3 直接終態改發終態通告', sc.followups.length === 3 && /審查閉環/.test(sc.followups[2]?.content?.[0]?.text ?? ''), String(sc.followups.length))
 	sc.teardown()
 }
 
@@ -407,7 +408,8 @@ console.log('\n── 場景⑦ 全候選皆敗：dim failed → run failed 路�
 	check('⑦ 該維度標記為 failed', st?.last?.dimensions?.[0]?.status === 'failed', st?.last?.dimensions?.[0]?.status)
 	// R6：dim 錯誤必須是 spawn 診斷而非「Cannot read properties of null」TypeError
 	check('⑦ dim 錯誤含 spawn 診斷（修復 R6 後非 TypeError）', /模型不存在|全敗|無可用審查模型/.test(st?.last?.dimensions?.[0]?.error ?? ''), st?.last?.dimensions?.[0]?.error)
-	check('⑦ 無注入（不帶病注入）', sc.followups.length === 0, String(sc.followups.length))
+	// R8（F-2）：failed 終態改發終態通告（1 條 followup = 通告本身，非修復建議注入）
+	check('⑦ 無修復建議注入（僅終態通告）', sc.followups.length === 1 && /審查閉環/.test(sc.followups[0]?.content?.[0]?.text ?? ''), String(sc.followups.length))
 	sc.teardown()
 }
 
@@ -423,12 +425,13 @@ console.log('\n── 場景⑧ R2 二階注入防護：finding 含可執行特�
 	await tick()
 	const st = await sc.state('s9')
 	check('⑧ 含可執行特徵 → 降級 awaiting-confirm（不自動注入）', st?.run?.status === 'awaiting-confirm', st?.run?.status)
-	check('⑧ 未直接 followup（等待人工確認）', sc.followups.length === 0, String(sc.followups.length))
+	// R8（F-1）：awaiting-confirm 向聊天框發「等確認」通知（1 條 ⏳ 消息，非注入）
+	check('⑧ 等確認通知已發（不注入建議）', sc.followups.length === 1 && /等待人工確認/.test(sc.followups[0]?.content?.[0]?.text ?? ''), String(sc.followups.length) + '/' + (sc.followups[0]?.content?.[0]?.text ?? '').slice(0, 40))
 	check('⑧ pendingInject.filteredCount 對外可見', (st?.run?.pendingInject?.filteredCount ?? 0) >= 1, JSON.stringify(st?.run?.pendingInject))
 	const inj = await sc.http('POST', '/__review/api/inject', { session: 's9' })
 	check('⑧ 確認注入 ok', inj?.ok === true, JSON.stringify(inj))
 	await tick()
-	const text = sc.followups[0]?.content?.[0]?.text ?? ''
+	const text = sc.followups[1]?.content?.[0]?.text ?? '' // 通知 [0]、注入 [1]
 	check('⑧ 注入消息含已過濾佔位符', text.includes('〔已過濾〕'), text.slice(0, 120))
 	check('⑧ 注入消息已剔除 raw curl/rm/URL 特徵', !/(curl |rm -|https?:\/\/|\|)/.test(text))
 	await sc.stop('s9')

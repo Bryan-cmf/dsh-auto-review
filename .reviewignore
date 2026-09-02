@@ -1,0 +1,4 @@
+# dsh-auto-review — 已接受風險登記（審查官複審不再翻舊賬，除非明顯惡化）
+# 格式：文件glob 或 文件glob|標題關鍵詞，行尾可選 " # 理由"
+lib/index.js|二階提示詞注入 # 已接受：SOFT/HARD 三層過濾+只讀工具雙護權（FINDINGS-v1.2 §明確不修）
+lib/index.js|注入過濾規則過寬 # 已接受：保守安全邊界屬設計取捨；securityHold v1.4.1 起可配置關閉

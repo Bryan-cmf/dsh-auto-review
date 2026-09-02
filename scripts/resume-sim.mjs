@@ -395,7 +395,8 @@ console.log('\n── 場景⑤ R3 manual 恢復：快照含 pendingInject → h
 		const inj = await sc.http('POST', '/__review/api/inject', { session: 's11' })
 		check('⑤b resume 後確認注入 ok', inj?.ok === true, JSON.stringify(inj))
 		await tick()
-		check('⑤b followup 達 1 次', sc.followups.length === 1, String(sc.followups.length))
+		// R9（F-7）：resume 恢復會補發「等確認」通知——followups = 通知 1 + 注入 1
+		check('⑤b followup = 等確認通知 + 確認注入（共 2 條）', sc.followups.length === 2 && (sc.followups[1]?.content?.[0]?.text ?? '').includes('<review-data>'), String(sc.followups.length))
 		await sc.stop('s11')
 		sc.teardown()
 	}
@@ -412,6 +413,25 @@ console.log('\n── 場景⑤ R3 manual 恢復：快照含 pendingInject → h
 		const st = await sc.state('s12')
 		check('⑤c 放棄後面板回到空閒（無 last、無 running）', st?.running === false && st?.last === null, JSON.stringify(st?.lastStatus))
 		check('⑤c 中斷快照被清除（不可再恢復）', (sc.storage.interrupted ?? []).length === 0, JSON.stringify(sc.storage.interrupted))
+		sc.teardown()
+	}
+	// 5d. R9：恢復路徑重新武裝確認超時 + 等確認通知（resume 後推進 fixWaitMs → 超時轉 paused）
+	{
+		const sc = await makeScenario('manual-confirm-timeout', {
+			seedStorage: { interrupted: [{ ...snapWithPending, sessionId: 's13', round: 1, maxRounds: 5 }] },
+		})
+		sc.addAgent('s13')
+		const r = await sc.resume('s13')
+		check('⑤d resume ok（pendingConfirm 語義）', r?.ok === true && r?.pendingConfirm === 1, JSON.stringify(r))
+		await tick()
+		check('⑤d resume 後補發「等確認」通知', sc.followups.length === 1 && /等待人工確認/.test(sc.followups[0]?.content?.[0]?.text ?? ''), String(sc.followups.length) + '/' + (sc.followups[0]?.content?.[0]?.text ?? '').slice(0, 40))
+		// 推進虛擬時鐘越過 fixWaitMs（默認 30min）→ 確認超時轉 paused
+		sc.clock.advance(32 * 60_000)
+		await tick()
+		const st = await sc.state('s13')
+		check('⑤d 未確認 → 超時轉 paused（可 /review resume 兜底）', st?.running === false && st?.lastStatus === 'paused', st?.lastStatus)
+		check('⑤d paused 附帶待確認超時說明', /待確認注入超時/.test(st?.last?.error ?? ''), st?.last?.error)
+		check('⑤d 超時也發終態通告（followups = 通知 1 + 通告 1）', sc.followups.length === 2 && /審查閉環/.test(sc.followups[1]?.content?.[0]?.text ?? ''), String(sc.followups.length))
 		sc.teardown()
 	}
 }
