@@ -5,7 +5,7 @@
 
 ## P0 — 必須
 
-### P0-1 真實端到端閉環驗收（PRD M5）
+### P0-1 真實端到端閉環驗收（PRD M5）✅ 已完成（v1.5.0，docs/ACCEPTANCE.md）
 - **現狀**：全部驗證為進程內模擬（smoke/loop-sim/resume-sim，共 9 場景 84 斷言）；PRD §9 的六條 M5 驗收（真實會話 /review → 注入 → 修復 → 複審 → 全綠終止 + 停止三路徑 + 卸載乾淨 + 掃描器 0 警告）未在真實 DSH 上演練。
 - **方案**：部署 profile bundle 後（需用戶同意重啟），在一個真實項目會話跑完整閉環 + 三條終止路徑 + 停用撤離檢查。
 - **工作量**：M。**依賴**：用戶授權重啟 DSH（本輪鐵律禁止）。
@@ -27,7 +27,7 @@
 - **方案**：injectNow 改 async 返回 promise；三處 `await` + catch → `{ok:false,error}` / failed 終態。
 - **工作量**：S。**依賴**：無。
 
-### P1-4 token 成本可見（PRD N2，未實現）
+### P1-4 token 成本可見（PRD N2）✅ 已完成（v1.5.0：sumReviewerUsage 讀審查者會話 assistant/message.usage，roundLog/publicRun/面板/報告四處展示）
 - **現狀**：面板無任何 token 消耗信息；閉環自動多輪（每輪 4 審查者）成本黑箱。
 - **方案**：從 SubagentRun 結果/usage（或 llm 服務統計）取每審查者 token 數，累計入 run；面板與報告展示每輪/累計成本。
 - **工作量**：M。**依賴**：確認 spawn SubagentRun 是否暴露 usage 字段（需查 dsh-subagent types）。
@@ -120,12 +120,12 @@
 > 快照 extras 截 50）；L-4 後半已修（resanitizePending 的 filteredCount 計入 extras HARD 分量）。
 > 以下 LOW 項記檔待後續批次：
 
-- **L-1** 絕對路徑 finding 不命中 ignore：finding.file 為絕對路徑時與 glob（相對路徑）不匹配
+- **L-1**（✅ v1.5.0 已修：matchIgnoreRule 剝 projectPath 前綴）絕對路徑 finding 不命中 ignore：finding.file 為絕對路徑時與 glob（相對路徑）不匹配
   （`matchIgnoreRule` 僅剝 `./` 前綴；可兩側剝 projectPath 前綴後比對）。
-- **L-2** 純諺文/西里爾等標題 normTitle 全剝：`normTitle` 只保留 CJK 與字母數字，此類標題
+- **L-2**（✅ v1.5.0 已修：空正規化回退原文小寫）純諺文/西里爾等標題 normTitle 全剝：`normTitle` 只保留 CJK 與字母數字，此類標題
   正規化為空串 → 同檔全碰撞（空結果可回退原文小寫）。
-- **L-3** `ignoredByDecision` 不持久化：重啟恢復（hydrate）後確認注入丟失「已接受」分組文案
+- **L-3**（✅ v1.5.0 已修：隨快照保留/恢復）`ignoredByDecision` 不持久化：重啟恢復（hydrate）後確認注入丟失「已接受」分組文案
   （下一輪聚合會重建；僅影響恢復輪的展示）。
-- **L-4** 面板待確認卡/確認注入按鈕未顯示 `extraCount`（client 側小改；host 數據已暴露）。
-- **L-5** `globToRe` 的 `**` 譯為 `.*` 無段邊界：`**/test/**` 會誤匹配 `src/contest/` 類路徑
+- **L-4**（✅ v1.5.0 已修：確認按鈕顯示「＋順帶 N」）面板待確認卡/確認注入按鈕未顯示 `extraCount`（client 側小改；host 數據已暴露）。
+- **L-5**（✅ v1.5.0 已修：`**/` 譯為 (?:.*/)? 段邊界組）`globToRe` 的 `**` 譯為 `.*` 無段邊界：`**/test/**` 會誤匹配 `src/contest/` 類路徑
   （ignore 方向 fail-open，誤忽略比誤報安全，但語義可再收緊）。
