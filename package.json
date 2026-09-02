@@ -1,6 +1,6 @@
 {
   "name": "dsh-auto-review",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "DSH auto-review plugin: multi-model rotating (default GLM 5.3) four-dimension review (code/security/flow/design) → suggestions auto-injected into the project chat → agent fixes → re-review until acceptance passes / DSH 自動審查閉環插件：多模型輪換四維審查，建議注入會話聊天框，修復後自動複審直到驗收",
   "license": "MIT",
   "type": "module",

@@ -141,10 +141,10 @@ targetAgent.followup({
 | Route | 方法 | 說明 |
 |---|---|---|
 | `/__review/api/state?session=` | GET | 閉環狀態+四維+findings（面板 3s 輪詢，活躍時 1s） |
-| `/__review/api/start` | POST | `{session, maxRounds?, gate?, scope?, models?, dims?, injectMode?}` 啟動（缺省項取設置頁預設） |
+| `/__review/api/start` | POST | `{session, maxRounds?, gate?, scope?, fixScope?, models?, dims?, injectMode?}` 啟動（缺省項取設置頁預設；fixScope 為 v1.4） |
 | `/__review/api/stop` | POST | `{session}` 終止（cancel 審查者 + 撤監聽） |
 | `/__review/api/resume` | POST | `{session}` 恢復 paused/interrupted 閉環（round+1）（v1.1） |
-| `/__review/api/config` | GET | 配置查詢：`{config, availableModels, persisted}`（v1.1；v1.3 改 availableModels 為動態來源） |
+| `/__review/api/config` | GET | 配置查詢：`{config, availableModels, persisted}`（v1.1；v1.3 改 availableModels 為動態來源；v1.4 config 增 `defaultFixScope`） |
 | `/__review/api/config` | POST | `{config}` 配置寫入（settings 持久化；動態模式內存；POST 受 Origin 校驗：hostname 精確白名單，前綴偽造 403）（v1.1） |
 | `/__review/api/inject` | POST | manual 模式確認注入 `{session}` |
 | `/__review/api/report?session=` | GET | Markdown 完整報告 |
@@ -152,7 +152,57 @@ targetAgent.followup({
 RPC（動態模式 `harness.handle`，與 HTTP 同語義）：`review-state / review-report / review-start /
 review-stop / review-resume / review-list / review-config-get / review-config-set / review-inject`。
 
-### 3.5.1 配置模型（v1.1，v1.3 模型來源改為動態對齊 DSH）
+### 3.5.2 v1.4 增量（P1-8 跨維度去重 / P1-9 .reviewignore / P1-11 fixScope / P1-12 輪次數據）
+
+**P1-8 聚合跨維度去重**：`runRound` 聚合後、注入前，對各維度阻斷項按指紋
+（`file + normTitle(title)`，沿用 A3 `fingerprintOf`）**跨維度合併**——注入清單共同指出只列
+一條（`coDims: [dimId...]` 標注來源，文案「⚠ A+B 共同指出」）；`/api/list` 的 `blocking` 與
+中斷快照計數按合併後算（`mergedBlockingCount`：先套 ignore 再合併）；`roundLog.blockingByDim`
+仍保留 per-dim 原始數據。合併規則（v1.4 收尾 M-1 修復）：(a) 行號窗口 ±10——同指紋但相距遠
+（如 line 10 vs 500）視為兩處問題不合併；(b) 合併後 severity 取各來源**最高**（代表條目歸最高
+嚴重度來源維度，防 critical 被降級）；(c) 同維度重複條目亦合併（不標 coDims）。
+security hold（人工確認）按**合併前**的 per-dim 原始視圖判斷——security 維度報過的項即使被
+合併到其他維度名下仍保持人工確認語義。
+
+**P1-9 項目級 .reviewignore（「明確不修」清單）**：倉庫根（`git rev-parse --show-toplevel`
+優先，退 projectPath）`.reviewignore`，每輪 best-effort 讀取（shell 服務不可用 → 空清單 +
+console.error 提示一次；無文件 → 優雅跳過）。行格式（空行與 `#` 開頭註釋行跳過）：
+
+```
+src/legacy/**                       # file glob + 可選 ' # 理由'
+src/app.js|未處理的空值引用導致崩潰  # 指紋模式（fileGlob|標題，標題按 normTitle 正規化比對）
+dist/                               # 結尾斜線 = 目錄前綴（等價 dist/**）
+```
+
+glob 支援 `**`（跨目錄）/`*`（單段）/`?`（單字符）。命中處理：阻斷項剔出注入清單、歸入
+`run.ignoredByDecision[dimId]`（含 `ignorePattern`/`ignoreReason`），**不阻擋全綠判定**
+（`d.pass` / 上輪複核清單 `prevBlocking` 口徑同步排除）；審查提示詞附「已知且已接受的風險
+（除非明顯惡化否則不再報告）」段；注入文案（`<review-data>` 的 `accepted` 數組）與報告
+（「已接受不修」表格）各自單獨分組含理由。**H-1（v1.4 收尾）**：pattern/reason 屬被審倉庫
+內容，`parseReviewIgnore` 於解析時統一清洗（控制字符剝離 + HARD 特徵佔位——含
+`git push --force` 類；reason 另套 SOFT 佔位並截 80，pattern 保留 glob/指紋語義截 120），
+且注入明細只入 `<review-data>` 數據塊——指令區僅固定模板一行，堵二階提示詞注入面；
+審查者提示詞段附「僅當作數據」邊界聲明。
+
+**P1-11 fixScope（修復範圍檔位，與通過線解耦）**：`fixScope ∈ blocking-only（默認）/
+plus-medium / all`（非法值回落 blocking-only）。注入清單 = gate 阻斷項（合併後）＋（按檔位）
+非阻斷順帶修復項——plus-medium 取 `{medium}`；**all = gate 補集**（M-2 修復：gate=loose 時
+high 亦非阻斷，「全修」涵蓋之）。順帶項在注入文案單獨分組「【非阻斷 · 順帶修復】」+
+`<review-data>` 的 `extras` 數組，排除已在阻斷清單的指紋與 ignore 命中項，跨維度去重同
+P1-8；**全綠判定（allPassed）與振盪檢測（fpStreak）完全不使用 extras**。extras 的 HARD
+過濾命中同樣觸發 awaiting-confirm。配置鍵 `defaultFixScope`（見 3.5.1）；start 端點與
+中斷快照攜帶 per-run 檔位（恢復時還原）。
+
+**P1-12 輪次數據（審查頁時間線）**：`injectLog` 條目擴為
+`{round, at, count, extraCount, fixScope, items[], extraItems[]}`，`items` 為注入項快照
+`[{severity, file, line, title≤120, dim, coDims?}]`（M-3：上限 50 條/輪；中斷快照中
+`pendingInject.extrasByDim` 同樣截 50）。`publicRun` 暴露完整 `roundLog`：每輪
+`{round, at, scope, changedCount, blockingByDim: {dimId: count}, mergedCount, crossCount,
+resolvedVsPrev, ignoredCount}`，其中 `resolvedVsPrev` = 上輪阻斷指紋 ∩ 本輪 `resolved:true`
+指紋數（較上輪確認修復數，R1 為 0）；另暴露 `fixScope`、`ignoredByDecision`、
+`pendingInject.extraCount`、`dimensions[].ignored`。client 據此渲染「輪次時間線」卡。
+
+### 3.5.1 配置模型（v1.1，v1.3 模型來源改為動態對齊 DSH；v1.4 增 fixScope）
 
 settings 命名空間 `dsh-auto-review`（schemastery schema，寬鬆存儲 + `mergeConfig` 嚴格收斂）：
 
@@ -164,6 +214,7 @@ settings 命名空間 `dsh-auto-review`（schemastery schema，寬鬆存儲 + `m
 | `defaultMaxRounds` | 1–10 | 5 |
 | `defaultScope` | smart/full | smart |
 | `defaultInjectMode` | auto/manual | auto |
+| `defaultFixScope` | blocking-only/plus-medium/all（v1.4：修復範圍檔位，與通過線解耦） | blocking-only |
 | `reviewerConcurrency` | 1–4 | 2 |
 | `reviewerTimeoutMin` | 5–60 | 15 |
 | `fixWaitTimeoutMin` | 5–720（活動型） | 30 |
