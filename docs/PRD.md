@@ -1,6 +1,9 @@
 # PRD — dsh-auto-review（自動審查官）
 
-> 版本 v1.0（定稿）· 2026-08-24 · 四項開放問題已拍板（見 §8 決定欄）
+> 版本 v1.1 · 2026-08-26 · v1.0 四項決定（見 §8）+ v1.1 優化批次：
+> 八項閉環加固（idle 賽窗/活動型超時/指紋錨點/可恢復）、智慧範圍、provider 預檢、
+> 配置持久化與 **DSH 設置頁「自動審查」分區**（模型增減 + 預設 + 執行參數）。
+> 詳細修訂記錄見 `PLAN.md` v1.1.0 段與 `SPEC.md`。
 
 ---
 
@@ -59,9 +62,12 @@
 
 每個維度 = 一個獨立 GLM 5.3 審查代理 + 該維度提示詞（checklist 化），**並行**執行。
 
-### F2 審查範圍（定稿：每輪全量）
-- **每一輪都對項目做全量複審**（複用 artifact-view 掃描邊界：深度≤4、排除 node_modules/.git 等、上限檔案數）——用戶明確選擇「最徹底」口徑，接受相應 token 成本；每輪同時複核上輪 findings 是否已修復。
+### F2 審查範圍（v1.1 修訂：可配，默認智慧）
+- **智慧（默認）**：R1 全量建立基線 → 後續輪聚焦**變更集**（git diff + 未跟蹤；非 git 退 find -newermt）
+  ＋複核上輪未過項；變更集收集失敗自動降級全量。接受取捨：smart 輪對未變更文件僅快速抽查。
+- **全量**：每一輪都對項目做全量複審（v1.0 行為，複用掃描邊界：深度≤4、排除 node_modules 等、上限檔案數）。
 - `/review <path>` 可審任意指定項目（S3 報告模式，不注入、只出報告）。
+- 報告與 roundLog 標注每輪實際範圍。
 
 ### F3 發現與報告
 - Finding 結構：`{severity, file, line?, title, detail, suggestion}`，severity ∈ critical/high/medium/low。
@@ -73,21 +79,32 @@
 - 注入前等待目標代理 idle（不打斷進行中的回合）。
 
 ### F5 閉環控制
-- 停止條件（任一）：① 四維全部通過 ✅ ② 達最大輪數（默認 5，可配）③ 同一 finding 連續 3 輪未消除（振盪保護，轉人工）④ 用戶主動停止。
+- 停止條件（任一）：① 四維全部通過 ✅ ② 達最大輪數（默認 5，可配）③ 同一 finding 連續 3 輪未消除（振盪保護，轉人工；v1.1 指紋+位置錨點雙級匹配，跨模型措辭漂移不擊穿）④ 用戶主動停止。
 - 每個會話同時最多一個審查閉環在跑。
+- **可恢復（v1.1）**：等待修復超時（活動型，默認 30 分鐘無活動）或目標代理離線 → 暫停；
+  DSH 重啟殺掉進行中閉環 → 中斷（快照持久化）。兩者皆可 `/review resume`（round+1 續審當前狀態）。
+- **複審觸發（v1.1 加固）**：注入後必須先觀察到目標代理 running 才承認其後 idle（防提前複審）。
 
 ### F6 觸發與 UI
-- 觸發：`/review [path]`、`/review stop`、`/review status` 命令；面板「開始審查」按鈕。
-- 面板：conversation.view 新 tab（label「審查」，order 80），顯示輪次、四維狀態燈、findings 列表、注入歷史、控制按鈕。
+- 觸發：`/review [path]`、`/review stop`、`/review status`、`/review resume`（v1.1）命令；面板「開始審查」按鈕。
+- 面板：conversation.view 新 tab（label「審查」，order 80），顯示輪次、四維狀態燈、findings 列表、注入歷史、控制按鈕、範圍切換、恢復按鈕。
+- **設置頁（v1.1）**：DSH 設置 → 自動審查（settings.section order 90）：自訂模型增減、默認模型多選、閉環預設（強度/輪次/範圍/注入模式）、執行參數（併發/審查者超時/等修復超時）。
 
-### F7 配置（持久化，經 settings 服務）
+### F7 配置（v1.1 擴充，經 settings 服務持久化，命名空間 dsh-auto-review）
 | 配置 | 默認 | 說明 |
 |---|---|---|
-| `maxRounds` | 5 | 閉環輪數上限 |
-| `severityGate` | critical+high | 通過線 |
-| `injectMode` | **auto（定稿）** | 全自動注入；manual 為可切換開關 |
-| `model` | zai / glm-5.3 | 可換審查模型（默認鎖 GLM 5.3） |
-| `reviewerReadOnly` | true | 審查者工具集只讀 |
+| `customModels` | `[]` | 自訂審查模型（provider+model id+顯示名），設置頁增減 |
+| `defaultModels` | `['glm-5.3']` | 默認審查模型（內建+自訂，多選輪換） |
+| `defaultGate` | critical+high | 通過線（loose/standard/strict） |
+| `defaultMaxRounds` | 5 | 閉環輪數上限（1–10） |
+| `defaultScope` | **smart（v1.1 修訂）** | 智慧（R1 全量→變更集聚焦）/ 全量 |
+| `defaultInjectMode` | **auto（定稿）** | 全自動注入；manual 為可切換開關 |
+| `reviewerConcurrency` | 2 | 審查者全局併發上限（1–4） |
+| `reviewerTimeoutMin` | 15 | 單審查者超時（5–60 分） |
+| `fixWaitTimeoutMin` | 30 | 等待修復超時（5–720 分；活動型順延） |
+| `reviewerReadOnly` | true（硬編碼） | 審查者工具集只讀（不可配） |
+- 發起閉環時對所選模型做 provider 路由預檢（`llm.listProviders()`），缺失即拒啟（v1.1）。
+- 動態調試模式（熱迭代）下配置僅內存，設置頁會提示；profile bundle 部署後持久化。
 
 ## 6. 非功能需求
 
@@ -110,7 +127,7 @@
 |---|---|---|
 | Q1 | 審查者形態 | ✅ **子代理會話**：provider `spawn`、outputSchema 結構化、toolFilter 只讀 |
 | Q2 | 注入模式默認 | ✅ **全自動閉環**（auto）；最大輪數 5 + 振盪保護兜底，manual 可切 |
-| Q3 | 審查範圍 | ✅ **每輪全量**（不走增量，接受 token 成本換徹底性） |
+| Q3 | 審查範圍 | ✅ v1.0「每輪全量」→ **v1.1 修訂為可配**：默認智慧（R1 全量→變更集聚焦），全量保留 |
 | Q4 | 發行形態 | ✅ **個人工具 + profile bundle**（不開源、不推 GitHub、不發 npm） |
 
 ## 9. 插件自身的驗收標準（M5 門檻）
