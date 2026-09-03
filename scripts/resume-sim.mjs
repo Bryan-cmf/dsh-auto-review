@@ -2,10 +2,13 @@
 // 用法：node scripts/resume-sim.mjs
 // 與 loop-sim.mjs 同款樁技術：虛擬時鐘假 timer + 樁 agents/subagents/sessionQuery + 樁 settings
 // （register→scope.get/update/dispose），並適配 t1 的 ctx.inject(['settings'], fn) 響應式註冊。
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
+
+// P1-13：終態歸檔寫 $DSH_HOME/review-history——測試一律重定向到臨時目錄，絕不寫真實 ~/.dsh
+process.env.DSH_HOME = mkdtempSync(path.join(os.tmpdir(), 'dsh-ar-resume-home-'))
 
 const root = path.dirname(path.dirname(new URL(import.meta.url).pathname))
 let failures = 0

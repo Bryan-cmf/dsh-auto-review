@@ -1,9 +1,12 @@
 // 煙霧測試：ESM 語法 + 模塊頂層執行 + 關鍵純函數行為 + client 樁加載
 // 用法：node scripts/smoke.mjs
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
+
+// P1-13：審查歷史持久化寫 $DSH_HOME/review-history——測試一律重定向到臨時目錄，絕不寫真實 ~/.dsh
+process.env.DSH_HOME = mkdtempSync(path.join(os.tmpdir(), 'dsh-ar-smoke-home-'))
 
 const root = path.dirname(path.dirname(new URL(import.meta.url).pathname))
 let failures = 0
@@ -351,6 +354,10 @@ const feats = {
 		return hostSrc.includes(marker) && readFileSync(path.join(root, 'lib/client.js'), 'utf8').includes(marker)
 	})(),
 	'C4 審查者絕對時限（槽永不卡死）': hostSrc.includes('rejectAfter') && hostSrc.includes('deadlineAt') && hostSrc.includes('fireAndForgetDispose'),
+	// P1-13（v1.6）：審查歷史持久化
+	'P1-13 歷史持久化（終態歸檔+LRU+截斷）': hostSrc.includes('HISTORY_ARCHIVED_STATUSES') && hostSrc.includes('HISTORY_KEEP_PER_PROJECT = 50') && hostSrc.includes('HISTORY_FILE_BUDGET_BYTES = 256 * 1024') && hostSrc.includes('archiveIfTerminal'),
+	'P1-13 歷史 API（清單+明細）': hostSrc.includes("p === '/__review/api/history'") && hostSrc.includes("p.startsWith('/__review/api/history/')") && hostSrc.includes('review-history-list') && hostSrc.includes('review-history-get'),
+	'P1-13 DSH_HOME 對齊宿主語義（$DSH_HOME→~/.dsh；node fs 受信通道）': hostSrc.includes('node:fs/promises') && hostSrc.includes("process.env.DSH_HOME") && hostSrc.includes('review-history'),
 	'client 設置頁組件': readFileSync(path.join(root, 'lib/client.js'), 'utf8').includes('function SettingsPage'),
 }
 for (const [name, ok] of Object.entries(feats)) check(name, ok)

@@ -14,10 +14,14 @@
 //   ⑤ P1-12 輪次數據：兩輪樁閉環 → publicRun.roundLog 完整（9 欄位、resolved 差值）、
 //           injectLog items 快照含 coDims / extras 分組
 //   ⑥ P1-7/10/12 client：截斷組件、次序 ↑↓、時間線卡、596 文案已改、MdRender 粗體/表格輸出
-import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, readdirSync, statSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
+
+// P1-13：終態歸檔寫 $DSH_HOME/review-history——測試一律重定向到臨時目錄，絕不寫真實 ~/.dsh
+const HIST_HOME = mkdtempSync(path.join(os.tmpdir(), 'dsh-ar-v14-home-'))
+process.env.DSH_HOME = HIST_HOME
 
 const root = path.dirname(path.dirname(new URL(import.meta.url).pathname))
 let failures = 0
@@ -182,8 +186,20 @@ async function makeScenario(name, opts = {}) {
 		await tick(30)
 		return res._json()
 	}
+	// P1-13：完全控制請求頭的原始 HTTP（鑑權/路徑參數校驗用）
+	const rawHttp = async (method, url, headers, socket) => {
+		const res = fakeRes()
+		routeHandler({
+			method, url,
+			headers: headers ?? { host: '127.0.0.1:3080', 'x-review-token': CUR_TOKEN },
+			socket: socket ?? { remoteAddress: '127.0.0.1' },
+			on: () => {}, destroy() {},
+		}, res)
+		await tick(10)
+		return res
+	}
 	return {
-		clock, agents, followups, spawns, script, addAgent, http,
+		clock, agents, followups, spawns, script, addAgent, http, rawHttp,
 		state: (sid) => http('GET', `/__review/api/state?session=${sid}`),
 		start: (sid, extra = {}) => http('POST', '/__review/api/start', { session: sid, ...extra }),
 		stop: (sid) => http('POST', '/__review/api/stop', { session: sid }),
@@ -701,6 +717,163 @@ const findTags = (n, tag, acc = []) => {
 	check('⑥ DimCard：長摘要觸發兩行截斷（clamp 樣式 + 展開鈕）',
 		findTags(dimTree, 'div').some((d) => d.props.style && d.props.style.WebkitLineClamp === 2) && text(dimTree).includes('展開 ▾'),
 		text(dimTree).slice(-40))
+}
+
+// ══════════════════ ⑦ P1-13 審查歷史持久化 ══════════════════
+// 歸檔觸發（六種終態）+ 磁碟佈局（$DSH_HOME/review-history/<slug>/<runId>/）+ 清單/明細 API
+// + 256KB 截斷（findings 為主）+ 每項目 LRU 50 + 鑑權與路徑參數校驗。slug = 會話 cwd 末段。
+console.log('\n── ⑦ P1-13 歷史：passed/stopped 歸檔 + 磁碟佈局 + 清單/明細 API ──')
+const flushHist = async () => { await new Promise((r) => setTimeout(r, 60)) } // 真實時鐘等異步歸檔鏈收斂
+/** 輪詢 GET 直到回應非空且述詞通過（歸檔鏈 FIFO：首個成功讀取即含全部已觸發終態；重試兜底長鏈 I/O）。 */
+const waitJson = async (sc, url, pred, tries = 40) => {
+	for (let i = 0; i < tries; i++) {
+		const body = await sc.http('GET', url)
+		if (body !== null && pred(body)) return body
+		await new Promise((r) => setTimeout(r, 50))
+	}
+	return null
+}
+{
+	const sc = await makeScenario('histA')
+	sc.addAgent('hA') // slug = cwd 末段 = 'hA'
+	sc.script.push(roundResult('code', [finding()])) // R1 blocking
+	sc.script.push(roundResult('code', []))          // R2 全綠 → passed
+	const r = await sc.start('hA', { dims: ['code'] })
+	check('⑦ start ok', r?.ok === true, JSON.stringify(r))
+	await tick()
+	await driveFix(sc, 'hA')
+	await tick()
+	const st = await sc.state('hA')
+	check('⑦ R2 全綠 → passed 終態', st?.running === false && st?.lastStatus === 'passed', st?.lastStatus)
+	await flushHist()
+	const list = await waitJson(sc, '/__review/api/history', (b) => (b.runs ?? []).some((x) => x.project === 'hA' && x.status === 'passed'))
+	const entry = (list?.runs ?? []).find((x) => x.project === 'hA')
+	check('⑦ 清單含 hA 的 passed 條目', list?.ok === true && entry?.status === 'passed' && entry?.hasReport === true, JSON.stringify(entry))
+	check('⑦ 摘要計數：blocking=0 / severityCounts 全 0 / injectCount=1',
+		entry?.blocking === 0 && JSON.stringify(entry?.severityCounts) === JSON.stringify({ critical: 0, high: 0, medium: 0, low: 0 }) && entry?.injectCount === 1,
+		JSON.stringify(entry?.severityCounts))
+	check('⑦ 摘要帶項目與輪次欄位', entry?.projectName === 'hA' && entry?.mode === 'loop' && entry?.round === 2 && entry?.maxRounds === 5 && Array.isArray(entry?.models),
+		JSON.stringify({ pn: entry?.projectName, round: entry?.round, models: entry?.models }))
+	const detail = await waitJson(sc, `/__review/api/history/${entry.runId}?project=hA`, (b) => b?.ok === true && b?.run?.runId === entry.runId)
+	check('⑦ 明細 ok：run.runId 一致 + status=passed', detail?.run?.runId === entry.runId && detail?.run?.status === 'passed', JSON.stringify(detail?.run?.runId))
+	check('⑦ 明細 historyMeta 如實（未截斷）', detail?.run?.historyMeta?.truncated === false && detail?.run?.historyMeta?.project === 'hA', JSON.stringify(detail?.run?.historyMeta))
+	check('⑦ 明細 report 為 Markdown 全文', typeof detail?.report === 'string' && detail.report.includes('自動審查官報告'), String(detail?.report ?? '').slice(0, 40))
+	// 磁碟佈局：review-history/<slug>/<runId>/{run.json,report.md} + 項目級 index.json
+	const projDir = path.join(HIST_HOME, 'review-history', 'hA')
+	const runDir = path.join(projDir, entry.runId)
+	check('⑦ 磁碟佈局 run.json/report.md/index.json 齊備',
+		exists(runDir + '/run.json') && exists(runDir + '/report.md') && exists(path.join(projDir, 'index.json')),
+		projDir)
+	const onDisk = JSON.parse(readFileSync(path.join(runDir, 'run.json'), 'utf8'))
+	check('⑦ 磁碟 run.json = publicRun 快照 + historyMeta', onDisk.runId === entry.runId && onDumpHasRunShape(onDisk), JSON.stringify(Object.keys(onDisk).slice(0, 6)))
+	sc.teardown()
+}
+function exists(p) { try { statSync(p); return true } catch { return false } }
+function onDumpHasRunShape(doc) {
+	const keys = ['runId', 'sessionId', 'status', 'round', 'roundLog', 'dimensions', 'historyMeta']
+	return keys.every((k) => k in doc) && Array.isArray(doc.dimensions) && doc.dimensions[0]?.counts != null
+}
+console.log('\n── ⑦ P1-13 歷史：stopped 歸檔；paused 不歸檔（可恢復暫態）──')
+{
+	const sc = await makeScenario('histB')
+	sc.addAgent('hB')
+	sc.script.push(roundResult('code', [finding()])) // R1 blocking → awaiting-fix
+	await sc.start('hB', { dims: ['code'] })
+	await tick()
+	await sc.stop('hB') // 用戶終止 → stopped 終態
+	await flushHist()
+	const list = await waitJson(sc, '/__review/api/history?project=hB', (b) => (b.runs ?? []).some((x) => x.status === 'stopped'))
+	check('⑦ stopped 亦歸檔（含 R1 阻斷計數）', list?.runs?.length === 1 && list.runs[0].status === 'stopped' && list.runs[0].blocking === 1,
+		JSON.stringify(list?.runs?.[0]))
+	sc.teardown()
+}
+{
+	const sc = await makeScenario('histC')
+	sc.addAgent('hC')
+	sc.script.push(roundResult('code', [finding()]))
+	await sc.start('hC', { dims: ['code'] })
+	await tick()
+	sc.agents.delete('hC') // 目標代理離線 → paused（可恢復，非終態）
+	sc.clock.advance(3_000)
+	await tick()
+	const st = await sc.state('hC')
+	check('⑦ 前置：代理離線 → paused', st?.running === false && st?.lastStatus === 'paused', st?.lastStatus)
+	await flushHist()
+	const list = await waitJson(sc, '/__review/api/history?project=hC', (b) => b?.ok === true, 10)
+	check('⑦ paused 不歸檔（歷史僅記六種終態）', (list?.runs ?? []).length === 0, JSON.stringify(list?.runs?.length))
+	sc.teardown()
+}
+console.log('\n── ⑦ P1-13 歷史：256KB 單檔截斷（findings 為主 + truncated/droppedFindings 如實標注）──')
+{
+	const sc = await makeScenario('histD')
+	sc.addAgent('hD')
+	const big = 'x'.repeat(5000)
+	const many = []
+	for (let i = 0; i < 300; i++) many.push(finding({ severity: 'low', title: `低嚴重度問題 ${i}`, detail: big, suggestion: big }))
+	for (let i = 0; i < 300; i++) many.push(finding({ severity: 'high', title: `高嚴重度問題 ${i}`, detail: big, suggestion: big }))
+	sc.script.push(roundResult('code', many))
+	const r = await sc.start('hD', { dims: ['code'], mode: 'report' }) // 報告模式：單輪 → reported 終態
+	check('⑦ 報告模式 start ok', r?.ok === true, JSON.stringify(r))
+	await tick()
+	const st = await sc.state('hD')
+	check('⑦ 報告模式單輪 → reported 終態', st?.running === false && st?.lastStatus === 'reported', st?.lastStatus)
+	await flushHist()
+	const list = await waitJson(sc, '/__review/api/history?project=hD', (b) => (b.runs ?? []).some((x) => x.truncated === true))
+	const entry = list?.runs?.[0]
+	check('⑦ 清單條目標注截斷（truncated + droppedFindings=600）', entry?.truncated === true && entry?.droppedFindings === 600, JSON.stringify({ t: entry?.truncated, d: entry?.droppedFindings }))
+	check('⑦ 清單計數不失真（low:300 / high:300 —— 丟明細保數量）',
+		entry?.severityCounts?.low === 300 && entry?.severityCounts?.high === 300, JSON.stringify(entry?.severityCounts))
+	const detail = await waitJson(sc, `/__review/api/history/${entry.runId}?project=hD`, (b) => b?.run?.historyMeta?.truncated === true)
+	check('⑦ 明細 historyMeta.truncated=true', detail?.run?.historyMeta?.truncated === true && detail?.run?.historyMeta?.droppedFindings === 600, JSON.stringify(detail?.run?.historyMeta))
+	const runJsonPath = path.join(HIST_HOME, 'review-history', 'hD', entry.runId, 'run.json')
+	const size = statSync(runJsonPath).size
+	check('⑦ 磁碟 run.json ≤ 256KB', size <= 256 * 1024, String(size))
+	const onDisk = JSON.parse(readFileSync(runJsonPath, 'utf8'))
+	check('⑦ 磁碟快照可解析且維度計數保留（findings 明細被削減）',
+		onDisk.dimensions?.[0]?.counts?.low === 300 && Array.isArray(onDisk.dimensions?.[0]?.findings) && onDisk.dimensions[0].findings.length === 0,
+		JSON.stringify(onDisk.dimensions?.[0]?.counts))
+	sc.teardown()
+}
+console.log('\n── ⑦ P1-13 歷史：每項目 LRU 保留 50（超額逐出最舊並刪目錄）──')
+{
+	const sc = await makeScenario('histE')
+	sc.addAgent('hE')
+	const firstTwo = []
+	for (let i = 0; i < 52; i++) {
+		sc.script.push(roundResult('code', [])) // 全綠 → passed 立即終態
+		const r = await sc.start('hE', { dims: ['code'], mode: 'report' })
+		if (i < 2) firstTwo.push(r?.runId)
+		await tick(15)
+		sc.clock.advance(10_000) // 拉開 archivedAt（虛擬時鐘 凍結下需手動推進）
+	}
+	await flushHist()
+	const list = await waitJson(sc, '/__review/api/history?project=hE', (b) => (b.runs ?? []).length === 50)
+	check('⑦ LRU：清單僅保留 50 條', list?.runs?.length === 50, String(list?.runs?.length))
+	check('⑦ LRU：最舊兩條已被逐出', firstTwo.every((id) => !(list.runs ?? []).some((x) => x.runId === id)), JSON.stringify(firstTwo))
+	const idx = JSON.parse(readFileSync(path.join(HIST_HOME, 'review-history', 'hE', 'index.json'), 'utf8'))
+	check('⑦ LRU：index.json 同步收斂到 50', Array.isArray(idx.runs) && idx.runs.length === 50, String(idx.runs?.length))
+	const dirs = readdirSync(path.join(HIST_HOME, 'review-history', 'hE')).filter((n) => n !== 'index.json')
+	check('⑦ LRU：磁碟 run 目錄同步刪除（50 個）', dirs.length === 50, String(dirs.length))
+	sc.teardown()
+}
+console.log('\n── ⑦ P1-13 歷史：鑑權（沿用 x-review-token + Host 白名單）與路徑參數校驗 ──')
+{
+	const sc = await makeScenario('histF')
+	sc.addAgent('hF')
+	sc.script.push(roundResult('code', []))
+	await sc.start('hF', { dims: ['code'], mode: 'report' })
+	await flushHist()
+	const noTok = await sc.rawHttp('GET', '/__review/api/history', { host: '127.0.0.1:3080' })
+	check('⑦ 無 token → 401（歷史端點掛既有鑑權）', noTok.out.code === 401, String(noTok.out.code))
+	const badTok = await sc.rawHttp('GET', '/__review/api/history', { host: '127.0.0.1:3080', 'x-review-token': 'bad' })
+	check('⑦ 錯 token → 401', badTok.out.code === 401, String(badTok.out.code))
+	const badHost = await sc.rawHttp('GET', '/__review/api/history', { host: 'evil.example' })
+	check('⑦ 惡意 Host → 403（DNS rebinding 防護同樣生效）', badHost.out.code === 403, String(badHost.out.code))
+	const evilId = await sc.rawHttp('GET', '/__review/api/history/..%2F..%2Fetc')
+	check('⑦ 路徑穿越 runId → 400（白名單校驗）', evilId.out.code === 400, String(evilId.out.code))
+	const notFound = await sc.http('GET', '/__review/api/history/zzz-not-exist')
+	check('⑦ 未知 runId → 404', notFound?.ok === false, JSON.stringify(notFound))
+	sc.teardown()
 }
 
 console.log(failures === 0 ? `\nv1.4 六項新能力 ${passes} 項斷言全部通過 ✅` : `\n${passes} 通過，${failures} 項失敗 ❌`)

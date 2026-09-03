@@ -2,10 +2,13 @@
 // 用法：node scripts/loop-sim.mjs
 // 純進程內：假 timer（虛擬時鐘，手動推進）+ 樁 agents/subagents/sessionQuery/webServer，
 // 直接驅動 lib/index.js 的 apply()。不依賴任何外部服務、不真實等待。
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
+
+// P1-13：終態歸檔寫 $DSH_HOME/review-history——測試一律重定向到臨時目錄，絕不寫真實 ~/.dsh
+process.env.DSH_HOME = mkdtempSync(path.join(os.tmpdir(), 'dsh-ar-loop-home-'))
 
 const root = path.dirname(path.dirname(new URL(import.meta.url).pathname))
 let failures = 0

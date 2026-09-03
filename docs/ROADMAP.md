@@ -134,7 +134,7 @@
 
 ## v1.6 規劃（2026-09-02 用戶提出：歷史保存 / 報告美化 / 類型統計圖表 / 交互優化）
 
-### P1-13 審查歷史持久化（「過去的審查記錄可以保存下來嗎？」）
+### P1-13 ✅ 已完成（v1.6.0）— 審查歷史持久化（「過去的審查記錄可以保存下來嗎？」）
 - **現狀**：run 全在內存；重啟僅 interrupted 快照存活（settings.yaml，≤20）；正常結束的閉環重啟後即消失，報告不可回看。
 - **方案**：
   ① 存儲：`$DSH_HOME/review-history/<project-slug>/<runId>/`——`run.json`（完整 publicRun 快照：dims findings/roundLog/injectLog items/tokenUsage/配置）+ `report.md`；**不寫被審倉庫**（保持審查零侵入）。
@@ -142,16 +142,18 @@
   ③ API：`GET /api/history?project=` 清單（日期/狀態/模型/阻斷數/token）、`GET /api/history/<runId>` 明細（run.json + report.md）。
   ④ 面板：「歷史記錄」區（時間倒序卡列表）→ 點擊展開舊報告（只讀渲染，含當時時間線）。
 - **工作量**：M。**依賴**：無（v1.4 的 injectLog items 快照正好復用）。
+- **✅ 落地（v1.6.0）**：如方案全部落地；寫入通道=node:fs 受信直寫（與 dsh-settings-file 同通道；SPEC §3.5.3）；歸檔 FIFO 串行 + 原子寫 + index 壞損自愈；256KB 截斷以 findings 為主且 counts 不失真（truncated/droppedFindings 如實標注）；面板歷史區全項目時間倒序、明細 ReportView 只讀渲染。
 
-### P1-14 報告渲染升級（「MD 渲染能否好看一點？」）
+### P1-14 ✅ 已完成（v1.6.0）— 報告渲染升級（「MD 渲染能否好看一點？」）
 - **現狀**：MdRender 輕量（標題/粗體/引用/清單/表格/分隔線），表格無斑馬紋、嚴重度是純文字、無導航無導出。
 - **方案**：
   ① 排版：標題階梯+間距節奏、表格斑馬紋+severity 色籤（cell 內色點+色字）、行內 code 樣式、引用豎線強調。
   ② 結構：頂部「摘要卡」（狀態/輪次/token/阻斷計數一覽）＋錨點 TOC（維度跳轉）＋每維度章節可摺疊（默認收起未通過維度以外的明細）。
   ③ 動作：右上「複製 MD」與「下載 .md」（anchor+data URL，零依賴）。
 - **工作量**：S–M。**依賴**：與 P1-15 同片區域，建議同批。
+- **✅ 落地（v1.6.0）**：MdRender 章節化重構（h1/h2 錨點、斑馬紋表格、severity 色籤、行內 code 底色、品牌色引用）；ReportView=動作列+RunSummaryCard 摘要卡+維度 TOC（scrollIntoView）+章節摺疊（未通過維度默認展開）；摘要卡阻斷數對齊 host mergedBlockingCount 口徑（t4 審查修復）。
 
-### P1-15 錯誤類型統計 + 圖表化（「按錯誤類型統計並圖表化」）
+### P1-15 ✅ 已完成（v1.6.0）— 錯誤類型統計 + 圖表化（「按錯誤類型統計並圖表化」）
 - **現狀**：僅有各維嚴重度計數（文字）；無分佈/趨勢/熱點視圖。
 - **方案**（純手寫 SVG/CSS，零圖表庫）：
   ① **嚴重度分佈**：环形圖（SVG stroke-dasharray；critical/high/medium/low 四色）。
@@ -162,6 +164,7 @@
   - 位置：報告頂部「統計摘要」段 + 面板「統計」摺疊區；數據全部來自 publicRun（client 自算，無新 API）。
   - 歷史聚合（跨 run 趨勢）依賴 P1-13 落地後為 P2 增量。
 - **工作量**：M。**依賴**：無；跨 run 聚合依賴 P1-13。
+- **✅ 落地（v1.6.0）**：五視圖齊全（SevDonut/ConvChart/DimStackChart/FileHotChart/StubbornList），數據 statsOfRun() 客戶端自算；SVG 全帶 role=img+aria-label+文字備援，除零/空態/單點安全；活躍與終態 run、歷史歸檔明細三處共用。
 
 ### P1-16 面板交互優化一籃子
 - **現狀**：信息層級偏平（全靠縱向滾動）、審查中無進度感、findings 無法篩選、入口只在右側分頁。

@@ -148,9 +148,62 @@ targetAgent.followup({
 | `/__review/api/config` | POST | `{config}` 配置寫入（settings 持久化；動態模式內存；POST 受 Origin 校驗：hostname 精確白名單，前綴偽造 403）（v1.1） |
 | `/__review/api/inject` | POST | manual 模式確認注入 `{session}` |
 | `/__review/api/report?session=` | GET | Markdown 完整報告 |
+| `/__review/api/history?project=` | GET | 審查歷史清單（v1.6 P1-13；`project` 為可選 slug 過濾；掛既有 x-review-token 鑑權 + Host 白名單） |
+| `/__review/api/history/<runId>` | GET | 審查歷史明細：`{ok, project, run, report}`（run = 完整 publicRun 快照 + historyMeta；`?project=` 可選限定） |
 
 RPC（動態模式 `harness.handle`，與 HTTP 同語義）：`review-state / review-report / review-start /
-review-stop / review-resume / review-list / review-config-get / review-config-set / review-inject`。
+review-stop / review-resume / review-list / review-config-get / review-config-set / review-inject /
+review-history-list({project}) / review-history-get({runId, project})`（歷史 RPC v1.6 增）。
+
+### 3.5.3 v1.6 增量（P1-13 審查歷史持久化）
+
+**存儲**：`$DSH_HOME/review-history/<project-slug>/<runId>/{run.json, report.md}` + 項目級
+`index.json`（摘要清單）。DSH_HOME 語義與宿主 `@deepseek-ai/dsh-home-paths` 的
+`resolveDshHome` 對齊：`$DSH_HOME`（trim 後非空才生效）→ 回退 `~/.dsh`。寫入通道 =
+受信 bundle 代碼直接 `node:fs/promises`（與 DSH 自家 `dsh-settings-file` 寫 settings.yaml
+同通道；不走 `ctx.get('fs')`——沙箱後端部署預設 read-only 會拒絕 DSH_HOME 寫入）。
+動態插件模式（import 被剝離）：歷史功能靜默停用（清單返回 `disabled: true`），閉環不受影響。
+
+**歸檔觸發**：僅六種終態 `passed / max-rounds / stopped / oscillated / failed / reported`
+（`archiveIfTerminal`；paused/interrupted/awaiting-confirm 為可恢復暫態不歸檔）。同一 runId
+再次到達終態（恢復後重跑）覆寫同目錄 = 冪等更新。寫入為 best-effort 異步鏈（FIFO 串行）；
+任何失敗 `console.error`（`[dsh-auto-review]` 標籤）靜默降級，絕不影響閉環本身。
+**單實例假設**：串行鏈為進程內語義——兩個 DSH 進程共享同一 DSH_HOME 時 index.json 的
+讀-改-寫可能丟對方條目（rename 原子寫保證單檔不壞；run 目錄按 runId 獨立不衝突）。DSH
+常規部署單進程，此假設成立；未來多實例並存需引入檔案鎖或按進程分目錄。
+
+**上限**：每項目 LRU 保留 50 個 run（index 按 `archivedAt` 新→舊，超額刪最舊目錄）；單檔
+（run.json / report.md）256KB 預算，超額以「findings 為主」漸進削減（文本收緊 → 丟 low →
+丟 medium → 裁時間線 → 丟 high → 骨架化），`historyMeta.truncated` 與
+`droppedFindings` 如實標注；維度 `counts` 與清單 `severityCounts` 永不失真。
+
+**清單條目形狀**（`GET /api/history?project=` → `{ok, disabled?, projects, runs[]}`，
+runs 按 archivedAt 新→舊，上限 300）：
+
+```jsonc
+{
+	"runId": "lfls-lonqk4", "project": "dsh-auto-review", "projectName": "dsh-auto-review",
+	"projectPath": "/abs/path", "sessionId": "s-1",
+	"status": "passed", "mode": "loop", "injectMode": "auto",
+	"gate": "standard", "fixScope": "blocking-only", "scope": "smart",
+	"round": 2, "maxRounds": 5, "startedAt": 1690000000000, "endedAt": 1690000123000,
+	"archivedAt": 1690000123000,
+	"blocking": 0,                       // 合併口徑（mergedBlockingCount）
+	"severityCounts": { "critical": 0, "high": 0, "medium": 0, "low": 0 },  // 未收斂項
+	"injectCount": 1, "models": ["glm-5.3"],
+	"truncated": false, "droppedFindings": 0, "hasReport": true
+}
+```
+
+**明細形狀**（`GET /api/history/<runId>` → `{ok, project, run, report}`）：`run` = 歸檔的
+完整 publicRun 快照（與 `/api/state` 的 `run` 同形，可直接餵既有面板組件）+ 追加
+`historyMeta: {schema, archivedAt, project, truncated, droppedFindings}`；`report` =
+report.md 全文（Markdown）。未知 runId → 404；非法 runId（非 `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`）
+→ 400。非回環連線響應沿用既有脫敏：`projectPath` 鍵取 basename、報告正文絕對路徑替換。
+
+**slug 規則**：`historySlugOf(projectPath)` = basename 經 `[A-Za-z0-9._-]` 白名單清洗
+（剝前後標點、非法字符→`-`、≤64 字符；空/退化 → `project`）——客戶端以清單返回的
+`project`/`projectPath` 對齊當前會話，勿自行拼路徑。
 
 ### 3.5.2 v1.4 增量（P1-8 跨維度去重 / P1-9 .reviewignore / P1-11 fixScope / P1-12 輪次數據）
 
